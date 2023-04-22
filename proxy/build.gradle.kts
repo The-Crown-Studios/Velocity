@@ -10,6 +10,23 @@ application {
     mainClass.set("com.velocitypowered.proxy.Velocity")
 }
 
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+
+    tasks.withType<JavaCompile> {
+        options.encoding = "UTF-8"
+    }
+
+    tasks.withType<Javadoc> {
+        options.encoding = "UTF-8"
+    }
+
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    }
+}
+
 tasks {
     withType<Checkstyle> {
         exclude("**/com/velocitypowered/proxy/protocol/packet/**")
@@ -109,6 +126,7 @@ dependencies {
     implementation(platform(libs.adventure.bom))
     implementation("net.kyori:adventure-nbt")
     implementation(libs.adventure.facet)
+    implementation(libs.hephaistos)
     implementation(libs.asynchttpclient)
     implementation(libs.completablefutures)
     implementation(libs.nightconfig)

@@ -41,8 +41,7 @@ public class IdentifiedKeyImpl implements IdentifiedKey {
   private @MonotonicNonNull Boolean isSignatureValid;
   private @MonotonicNonNull UUID holder;
 
-  public IdentifiedKeyImpl(Revision revision, byte[] keyBits, long expiry,
-      byte[] signature) {
+  public IdentifiedKeyImpl(Revision revision, byte[] keyBits, long expiry, byte[] signature) {
     this(revision, EncryptionUtils.parseRsaPublicKey(keyBits),
         Instant.ofEpochMilli(expiry), signature);
   }

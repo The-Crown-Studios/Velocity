@@ -14,8 +14,19 @@ subprojects {
     apply<VelocitySpotlessPlugin>()
 
     java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+
+        tasks.withType<JavaCompile> {
+            options.encoding = "UTF-8"
+        }
+
+        tasks.withType<Javadoc> {
+            options.encoding = "UTF-8"
+        }
+
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(11))
+            languageVersion.set(JavaLanguageVersion.of(17))
         }
     }
 

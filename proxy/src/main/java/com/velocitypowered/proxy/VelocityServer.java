@@ -128,7 +128,7 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
       .registerTypeHierarchyAdapter(Favicon.class, FaviconSerializer.INSTANCE)
       .create();
 
-  private final ConnectionManager cm;
+  private final ConnectionManager connectionManager;
   private final ProxyOptions options;
   private @MonotonicNonNull VelocityConfiguration configuration;
   private @MonotonicNonNull KeyPair serverKeyPair;
@@ -154,7 +154,7 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
     commandManager = new VelocityCommandManager(eventManager);
     scheduler = new VelocityScheduler(pluginManager);
     console = new VelocityConsole(this);
-    cm = new ConnectionManager(this);
+    connectionManager = new ConnectionManager(this);
     servers = new ServerMap(this);
     serverListPingHandler = new ServerListPingHandler(this);
     this.options = options;
@@ -195,7 +195,7 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
   }
 
   void awaitProxyShutdown() {
-    cm.getBossGroup().terminationFuture().syncUninterruptibly();
+    connectionManager.getBossGroup().terminationFuture().syncUninterruptibly();
   }
 
   @EnsuresNonNull({"serverKeyPair", "servers", "pluginManager", "eventManager", "scheduler",
@@ -208,13 +208,12 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
 
     serverKeyPair = EncryptionUtils.createRsaKeyPair(1024);
 
-    cm.logChannelInformation();
+    connectionManager.logChannelInformation();
 
     // Initialize commands first
     commandManager.register("velocity", new VelocityCommand(this));
     commandManager.register("server", new ServerCommand(this));
-    commandManager.register("shutdown", ShutdownCommand.command(this),
-        "end", "stop");
+    commandManager.register("shutdown", ShutdownCommand.command(this), "end", "stop");
     new GlistCommand(this).register();
 
     this.doStartupConfigLoad();
@@ -236,13 +235,13 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
     final Integer port = this.options.getPort();
     if (port != null) {
       logger.debug("Overriding bind port to {} from command line option", port);
-      this.cm.bind(new InetSocketAddress(configuration.getBind().getHostString(), port));
+      this.connectionManager.bind(new InetSocketAddress(configuration.getBind().getHostString(), port));
     } else {
-      this.cm.bind(configuration.getBind());
+      this.connectionManager.bind(configuration.getBind());
     }
 
     if (configuration.isQueryEnabled()) {
-      this.cm.queryBind(configuration.getBind().getHostString(), configuration.getQueryPort());
+      this.connectionManager.queryBind(configuration.getBind().getHostString(), configuration.getQueryPort());
     }
 
     Metrics.VelocityMetrics.startMetrics(this, configuration.getMetrics());
@@ -365,11 +364,11 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
   }
 
   public Bootstrap createBootstrap(@Nullable EventLoopGroup group) {
-    return this.cm.createWorker(group);
+    return this.connectionManager.createWorker(group);
   }
 
   public ChannelInitializer<Channel> getBackendChannelInitializer() {
-    return this.cm.backendChannelInitializer.get();
+    return this.connectionManager.backendChannelInitializer.get();
   }
 
   public ServerListPingHandler getServerListPingHandler() {
@@ -446,19 +445,19 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
 
     // If we have a new bind address, bind to it
     if (!configuration.getBind().equals(newConfiguration.getBind())) {
-      this.cm.bind(newConfiguration.getBind());
-      this.cm.close(configuration.getBind());
+      this.connectionManager.bind(newConfiguration.getBind());
+      this.connectionManager.close(configuration.getBind());
     }
 
     boolean queryPortChanged = newConfiguration.getQueryPort() != configuration.getQueryPort();
     boolean queryAlreadyEnabled = configuration.isQueryEnabled();
     boolean queryEnabled = newConfiguration.isQueryEnabled();
     if ((!queryEnabled && queryAlreadyEnabled) || queryPortChanged) {
-      this.cm.close(new InetSocketAddress(
+      this.connectionManager.close(new InetSocketAddress(
           configuration.getBind().getHostString(), configuration.getQueryPort()));
     }
     if (queryEnabled && queryPortChanged) {
-      this.cm.queryBind(newConfiguration.getBind().getHostString(),
+      this.connectionManager.queryBind(newConfiguration.getBind().getHostString(),
           newConfiguration.getQueryPort());
     }
 
@@ -476,7 +475,7 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
    * @param reason       message to kick online players with
    */
   public void shutdown(boolean explicitExit, Component reason) {
-    if (eventManager == null || pluginManager == null || cm == null || scheduler == null) {
+    if (eventManager == null || pluginManager == null || connectionManager == null || scheduler == null) {
       throw new AssertionError();
     }
 
@@ -489,7 +488,7 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
 
       // Shutdown the connection manager, this should be
       // done first to refuse new connections
-      cm.shutdown();
+      connectionManager.shutdown();
 
       ImmutableList<ConnectedPlayer> players = ImmutableList.copyOf(connectionsByUuid.values());
       for (ConnectedPlayer player : players) {
@@ -573,7 +572,7 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
   }
 
   public AsyncHttpClient getAsyncHttpClient() {
-    return cm.getHttpClient();
+    return connectionManager.getHttpClient();
   }
 
   public Ratelimiter getIpAttemptLimiter() {

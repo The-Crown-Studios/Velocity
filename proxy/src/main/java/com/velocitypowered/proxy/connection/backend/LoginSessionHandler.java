@@ -106,14 +106,12 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
       }
 
       final byte[] contents = ByteBufUtil.getBytes(packet.content());
-      final MinecraftChannelIdentifier identifier = MinecraftChannelIdentifier
-          .from(packet.getChannel());
-      this.server.getEventManager().fire(new ServerLoginPluginMessageEvent(serverConn, identifier,
-              contents, packet.getId()))
+      final MinecraftChannelIdentifier identifier = MinecraftChannelIdentifier.from(packet.getChannel());
+
+      this.server.getEventManager().fire(new ServerLoginPluginMessageEvent(serverConn, identifier, contents, packet.getId()))
           .thenAcceptAsync(event -> {
             if (event.getResult().isAllowed()) {
-              mc.write(new LoginPluginResponse(packet.getId(), true, Unpooled
-                  .wrappedBuffer(event.getResult().getResponse())));
+              mc.write(new LoginPluginResponse(packet.getId(), true, Unpooled.wrappedBuffer(event.getResult().getResponse())));
             } else {
               mc.write(new LoginPluginResponse(packet.getId(), false, Unpooled.EMPTY_BUFFER));
             }
