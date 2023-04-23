@@ -1,13 +1,22 @@
 package com.velocitypowered.proxy.network.packet.client.handshake;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.velocitypowered.proxy.MinecraftProxy;
 import com.velocitypowered.proxy.network.NetworkBuffer;
 import com.velocitypowered.proxy.network.packet.client.ClientPreplayPacket;
+import com.velocitypowered.proxy.network.player.GameProfile;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.SocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static com.velocitypowered.proxy.network.NetworkBuffer.*;
@@ -22,7 +31,7 @@ public record HandshakePacket(
     /**
      * Text sent if a player tries to connect with an invalid version of the client
      */
-    private static final Component INVALID_VERSION_TEXT = Component.text("Invalid Version, please use " + MinecraftServer.VERSION_NAME, NamedTextColor.RED);
+    private static final Component INVALID_VERSION_TEXT = Component.text("Invalid Version, please use " + MinecraftProxy.VERSION_NAME, NamedTextColor.RED);
 
     /**
      * Indicates that a BungeeGuard authentication was invalid due to missing, multiple, or invalid tokens.
@@ -75,10 +84,10 @@ public record HandshakePacket(
                 socketConnection.setRemoteAddress(socketAddress);
 
                 UUID playerUuid = java.util.UUID.fromString(
-                        split[2]
-                                .replaceFirst(
-                                        "(\\p{XDigit}{8})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}+)", "$1-$2-$3-$4-$5"
-                                )
+                        split[2].replaceFirst(
+                                "(\\p{XDigit}{8})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}+)",
+                                "$1-$2-$3-$4-$5"
+                        )
                 );
 
                 List<GameProfile.Property> properties = new ArrayList<>();

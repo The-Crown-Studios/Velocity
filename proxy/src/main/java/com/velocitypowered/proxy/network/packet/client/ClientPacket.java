@@ -1,5 +1,7 @@
 package com.velocitypowered.proxy.network.packet.client;
 
+import com.velocitypowered.proxy.network.NetworkBuffer;
+
 /**
  * Represents a packet received from a client.
  * <p>

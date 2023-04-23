@@ -23,7 +23,6 @@ import static com.velocitypowered.proxy.protocol.util.NettyPreconditions.checkFr
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.proxy.crypto.IdentifiedKey;
 import com.velocitypowered.api.util.GameProfile;
-import com.velocitypowered.proxy.crypto.IdentifiedKeyImpl;
 import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
 import com.velocitypowered.proxy.protocol.util.VelocityLegacyHoverEventSerializer;
 import com.velocitypowered.proxy.util.except.QuietDecoderException;

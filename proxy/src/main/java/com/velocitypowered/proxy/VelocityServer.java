@@ -46,7 +46,6 @@ import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.connection.player.VelocityResourcePackInfo;
 import com.velocitypowered.proxy.connection.util.ServerListPingHandler;
 import com.velocitypowered.proxy.console.VelocityConsole;
-import com.velocitypowered.proxy.crypto.EncryptionUtils;
 import com.velocitypowered.proxy.event.VelocityEventManager;
 import com.velocitypowered.proxy.network.ConnectionManager;
 import com.velocitypowered.proxy.plugin.VelocityPluginManager;
@@ -651,17 +650,21 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
   public Collection<Player> matchPlayer(String partialName) {
     Objects.requireNonNull(partialName);
 
-    return getAllPlayers().stream().filter(p -> p.getUsername()
-            .regionMatches(true, 0, partialName, 0, partialName.length()))
-        .collect(Collectors.toList());
+    return getAllPlayers()
+            .stream()
+            .filter(p -> p.getUsername()
+                    .regionMatches(true, 0, partialName, 0, partialName.length()))
+            .collect(Collectors.toList());
   }
 
   @Override
   public Collection<RegisteredServer> matchServer(String partialName) {
     Objects.requireNonNull(partialName);
 
-    return getAllServers().stream().filter(s -> s.getServerInfo().getName()
-            .regionMatches(true, 0, partialName, 0, partialName.length()))
+    return getAllServers()
+            .stream()
+            .filter(s -> s.getServerInfo().getName()
+                    .regionMatches(true, 0, partialName, 0, partialName.length()))
         .collect(Collectors.toList());
   }
 

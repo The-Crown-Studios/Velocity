@@ -1,5 +1,6 @@
 package com.velocitypowered.proxy.util;
 
+import com.velocitypowered.proxy.util.binary.BinaryBuffer;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 

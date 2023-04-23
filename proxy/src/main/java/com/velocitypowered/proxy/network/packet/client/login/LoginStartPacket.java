@@ -1,16 +1,25 @@
 package com.velocitypowered.proxy.network.packet.client.login;
 
+import com.velocitypowered.proxy.crypto.PlayerPublicKey;
+import com.velocitypowered.proxy.crypto.SignatureValidator;
+import com.velocitypowered.proxy.network.NetworkBuffer;
+import com.velocitypowered.proxy.network.packet.client.ClientPreplayPacket;
+import com.velocitypowered.proxy.network.player.ClientConnection;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+
+import static com.velocitypowered.proxy.network.NetworkBuffer.*;
 
 public record LoginStartPacket(
         @NotNull String username,
         @Nullable PlayerPublicKey publicKey,
         @Nullable UUID profileId
+
 ) implements ClientPreplayPacket {
 
     private static final Component ALREADY_CONNECTED = Component.text("You are already on this server", NamedTextColor.RED);
@@ -20,7 +29,7 @@ public record LoginStartPacket(
     }
 
     @Override
-    public void process(@NotNull PlayerConnection connection) {
+    public void process(@NotNull ClientConnection connection) {
         // TODO use uuid
         // TODO configurable check & messages
         if (publicKey != null) {

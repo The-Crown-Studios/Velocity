@@ -1,253 +1,279 @@
-/*
- * Copyright (C) 2018-2023 Velocity Contributors
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 package com.velocitypowered.proxy.network;
 
-import static org.asynchttpclient.Dsl.asyncHttpClient;
-import static org.asynchttpclient.Dsl.config;
-
-import com.google.common.base.Preconditions;
-import com.velocitypowered.api.event.proxy.ListenerBoundEvent;
-import com.velocitypowered.api.event.proxy.ListenerCloseEvent;
-import com.velocitypowered.api.network.ListenerType;
-import com.velocitypowered.natives.util.Natives;
-import com.velocitypowered.proxy.VelocityServer;
-import com.velocitypowered.proxy.network.netty.SeparatePoolInetNameResolver;
-import com.velocitypowered.proxy.protocol.netty.GameSpyQueryHandler;
-import io.netty.bootstrap.Bootstrap;
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.WriteBufferWaterMark;
-import io.netty.channel.epoll.EpollChannelOption;
-import io.netty.util.concurrent.GlobalEventExecutor;
-import java.net.InetSocketAddress;
-import java.util.HashMap;
-import java.util.Map;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.asynchttpclient.AsyncHttpClient;
-import org.asynchttpclient.RequestBuilder;
-import org.asynchttpclient.filter.FilterContext;
-import org.asynchttpclient.filter.FilterContext.FilterContextBuilder;
-import org.asynchttpclient.filter.RequestFilter;
+import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.proxy.MinecraftProxy;
+import com.velocitypowered.proxy.network.player.ClientConnection;
+import com.velocitypowered.proxy.network.player.ClientSocketConnection;
+import com.velocitypowered.proxy.util.validate.Check;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.checkerframework.checker.nullness.qual.Nullable;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.function.Function;
 
 /**
- * Manages endpoints managed by Velocity, along with initializing the Netty event loop group.
+ * Manages the connected clients.
  */
 public final class ConnectionManager {
 
-  private static final WriteBufferWaterMark SERVER_WRITE_MARK = new WriteBufferWaterMark(1 << 20,
-      1 << 21);
-  private static final Logger LOGGER = LogManager.getLogger(ConnectionManager.class);
-  private final Map<InetSocketAddress, Endpoint> endpoints = new HashMap<>();
-  private final TransportType transportType;
-  private final EventLoopGroup bossGroup;
-  private final EventLoopGroup workerGroup;
-  private final VelocityServer server;
-  // These are intentionally made public for plugins like ViaVersion, which inject their own
-  // protocol logic into the proxy.
-  @SuppressWarnings("WeakerAccess")
-  public final ServerChannelInitializerHolder serverChannelInitializer;
-  @SuppressWarnings("WeakerAccess")
-  public final BackendChannelInitializerHolder backendChannelInitializer;
+    private static final long KEEP_ALIVE_DELAY = 10_000;
+    private static final long KEEP_ALIVE_KICK = 30_000;
+    private static final Component TIMEOUT_TEXT = Component.text("Timeout", NamedTextColor.RED);
 
-  private final SeparatePoolInetNameResolver resolver;
-  private final AsyncHttpClient httpClient;
+    private final MessagePassingQueue<Player> waitingPlayers = new MpscUnboundedArrayQueue<>(64);
+    private final Set<Player> players = new CopyOnWriteArraySet<>();
+    private final Set<Player> unmodifiablePlayers = Collections.unmodifiableSet(players);
+    private final Map<ClientConnection, Player> connectionPlayerMap = new ConcurrentHashMap<>();
 
-  /**
-   * Initalizes the {@code ConnectionManager}.
-   *
-   * @param server a reference to the Velocity server
-   */
-  public ConnectionManager(VelocityServer server) {
-    this.server = server;
-    this.transportType = TransportType.bestType();
-    this.bossGroup = this.transportType.createEventLoopGroup(TransportType.Type.BOSS);
-    this.workerGroup = this.transportType.createEventLoopGroup(TransportType.Type.WORKER);
-    this.serverChannelInitializer = new ServerChannelInitializerHolder(
-        new ServerChannelInitializer(this.server));
-    this.backendChannelInitializer = new BackendChannelInitializerHolder(
-        new BackendChannelInitializer(this.server));
-    this.resolver = new SeparatePoolInetNameResolver(GlobalEventExecutor.INSTANCE);
-    this.httpClient = asyncHttpClient(config()
-        .setEventLoopGroup(this.workerGroup)
-        .setUserAgent(server.getVersion().getName() + "/" + server.getVersion().getVersion())
-        .addRequestFilter(new RequestFilter() {
-          @Override
-          public <T> FilterContext<T> filter(FilterContext<T> ctx) {
-            return new FilterContextBuilder<>(ctx)
-                .request(new RequestBuilder(ctx.getRequest())
-                    .setNameResolver(resolver)
-                    .build())
-                .build();
-          }
-        })
-        .build());
-  }
+    // The uuid provider once a player login
+    private volatile UuidProvider uuidProvider = (playerConnection, username) -> UUID.randomUUID();
+    // The player provider to have your own Player implementation
+    private volatile PlayerProvider playerProvider = Player::new;
 
-  public void logChannelInformation() {
-    LOGGER.info("Connections will use {} channels, {} compression, {} ciphers", this.transportType,
-        Natives.compress.getLoadedVariant(), Natives.cipher.getLoadedVariant());
-  }
-
-  /**
-   * Binds a Minecraft listener to the specified {@code address}.
-   *
-   * @param address the address to bind to
-   */
-  public void bind(final InetSocketAddress address) {
-    final ServerBootstrap bootstrap = new ServerBootstrap()
-        .channelFactory(this.transportType.serverSocketChannelFactory)
-        .group(this.bossGroup, this.workerGroup)
-        .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, SERVER_WRITE_MARK)
-        .childHandler(this.serverChannelInitializer.get())
-        .childOption(ChannelOption.TCP_NODELAY, true)
-        .childOption(ChannelOption.IP_TOS, 0x18)
-        .localAddress(address);
-
-    if (transportType == TransportType.EPOLL && server.getConfiguration().useTcpFastOpen()) {
-      bootstrap.option(EpollChannelOption.TCP_FASTOPEN, 3);
+    /**
+     * Gets the {@link Player} linked to a {@link ClientConnection}.
+     *
+     * @param connection the player connection
+     * @return the player linked to the connection
+     */
+    public Player getPlayer(@NotNull ClientConnection connection) {
+        return connectionPlayerMap.get(connection);
     }
 
-    bootstrap.bind()
-        .addListener((ChannelFutureListener) future -> {
-          final Channel channel = future.channel();
-          if (future.isSuccess()) {
-            this.endpoints.put(address, new Endpoint(channel, ListenerType.MINECRAFT));
-            LOGGER.info("Listening on {}", channel.localAddress());
+    /**
+     * Gets all online players.
+     *
+     * @return an unmodifiable collection containing all the online players
+     */
+    public @NotNull Collection<@NotNull Player> getOnlinePlayers() {
+        return unmodifiablePlayers;
+    }
 
-            // Fire the proxy bound event after the socket is bound
-            server.getEventManager().fireAndForget(
-                new ListenerBoundEvent(address, ListenerType.MINECRAFT));
-          } else {
-            LOGGER.error("Can't bind to {}", address, future.cause());
-          }
+    /**
+     * Finds the closest player matching a given username.
+     *
+     * @param username the player username (can be partial)
+     * @return the closest match, null if no players are online
+     */
+    public @Nullable Player findPlayer(@NotNull String username) {
+        Player exact = getPlayer(username);
+        if (exact != null) return exact;
+        final String username1 = username.toLowerCase(Locale.ROOT);
+
+        Function<Player, Double> distanceFunction = player -> {
+            final String username2 = player.getUsername().toLowerCase(Locale.ROOT);
+            return StringUtils.jaroWinklerScore(username1, username2);
+        };
+
+        return getOnlinePlayers()
+                .stream()
+                .min(Comparator.comparingDouble(distanceFunction::apply))
+                .filter(player -> distanceFunction.apply(player) > 0)
+                .orElse(null);
+    }
+
+    /**
+     * Gets the first player which validate {@link String#equalsIgnoreCase(String)}.
+     * <p>
+     * This can cause issue if two or more players have the same username.
+     *
+     * @param username the player username (ignoreCase)
+     * @return the first player who validate the username condition, null if none was found
+     */
+    public @Nullable Player getPlayer(@NotNull String username) {
+        for (Player player : getOnlinePlayers()) {
+            if (player.getUsername().equalsIgnoreCase(username))
+                return player;
+        }
+        return null;
+    }
+
+    /**
+     * Gets the first player which validate {@link UUID#equals(Object)}.
+     * <p>
+     * This can cause issue if two or more players have the same UUID.
+     *
+     * @param uuid the player UUID
+     * @return the first player who validate the UUID condition, null if none was found
+     */
+    public @Nullable Player getPlayer(@NotNull UUID uuid) {
+        for (Player player : getOnlinePlayers()) {
+            if (player.getUuid().equals(uuid))
+                return player;
+        }
+        return null;
+    }
+
+    /**
+     * Changes how {@link UUID} are attributed to players.
+     * <p>
+     * Shouldn't be override if already defined.
+     * <p>
+     * Be aware that it is possible for an UUID provider to be ignored, for example in the case of a proxy (eg: velocity).
+     *
+     * @param uuidProvider the new player connection uuid provider,
+     *                     setting it to null would apply a random UUID for each player connection
+     * @see #getPlayerConnectionUuid(ClientConnection, String)
+     */
+    public void setUuidProvider(@Nullable UuidProvider uuidProvider) {
+        this.uuidProvider = uuidProvider != null ? uuidProvider : (playerConnection, username) -> UUID.randomUUID();
+    }
+
+    /**
+     * Computes the UUID of the specified connection.
+     * Used in {@link net.minestom.server.network.packet.client.login.LoginStartPacket} in order
+     * to give the player the right {@link UUID}.
+     *
+     * @param clientConnection the player connection
+     * @param username         the username given by the connection
+     * @return the uuid based on {@code playerConnection}
+     * return a random UUID if no UUID provider is defined see {@link #setUuidProvider(UuidProvider)}
+     */
+    public @NotNull UUID getPlayerConnectionUuid(@NotNull ClientConnection clientConnection, @NotNull String username) {
+        return uuidProvider.provide(clientConnection, username);
+    }
+
+    /**
+     * Changes the {@link Player} provider, to change which object to link to him.
+     *
+     * @param playerProvider the new {@link PlayerProvider}, can be set to null to apply the default provider
+     */
+    public void setPlayerProvider(@Nullable PlayerProvider playerProvider) {
+        this.playerProvider = playerProvider != null ? playerProvider : Player::new;
+    }
+
+    /**
+     * Retrieves the current {@link PlayerProvider}, can be the default one if none is defined.
+     *
+     * @return the current {@link PlayerProvider}
+     */
+    public @NotNull PlayerProvider getPlayerProvider() {
+        return playerProvider;
+    }
+
+    public synchronized void registerPlayer(@NotNull Player player) {
+        this.players.add(player);
+        this.connectionPlayerMap.put(player.getPlayerConnection(), player);
+    }
+
+    /**
+     * Removes a {@link Player} from the players list.
+     * <p>
+     * Used during disconnection, you shouldn't have to do it manually.
+     *
+     * @param connection the player connection
+     * @see PlayerConnection#disconnect() to properly disconnect a player
+     */
+    public synchronized void removePlayer(@NotNull PlayerConnection connection) {
+        final Player player = this.connectionPlayerMap.remove(connection);
+        if (player == null) return;
+        this.players.remove(player);
+    }
+
+    /**
+     * Calls the player initialization callbacks and the event {@link AsyncPlayerPreLoginEvent}.
+     * <p>
+     * Sends a {@link LoginSuccessPacket} if successful (not kicked)
+     * and change the connection state to {@link ConnectionState#PLAY}.
+     *
+     * @param player   the player
+     * @param register true to register the newly created player in {@link ConnectionManager} lists
+     */
+    public CompletableFuture<Void> startPlayState(@NotNull Player player, boolean register) {
+        return AsyncUtils.runAsync(() -> {
+            final ClientConnection playerConnection = player.getPlayerConnection();
+            // Compression
+            if (playerConnection instanceof ClientSocketConnection socketConnection) {
+                final int threshold = MinecraftProxy.getCompressionThreshold();
+                if (threshold > 0) socketConnection.startCompression();
+            }
+            // Call pre login event
+            AsyncPlayerPreLoginEvent asyncPlayerPreLoginEvent = new AsyncPlayerPreLoginEvent(player);
+            EventDispatcher.call(asyncPlayerPreLoginEvent);
+            if (!player.isOnline())
+                return; // Player has been kicked
+            // Change UUID/Username based on the event
+            {
+                final String eventUsername = asyncPlayerPreLoginEvent.getUsername();
+                final UUID eventUuid = asyncPlayerPreLoginEvent.getPlayerUuid();
+                if (!player.getUsername().equals(eventUsername)) {
+                    player.setUsernameField(eventUsername);
+                }
+                if (!player.getUuid().equals(eventUuid)) {
+                    player.setUuid(eventUuid);
+                }
+            }
+            // Send login success packet
+            LoginSuccessPacket loginSuccessPacket = new LoginSuccessPacket(player.getUuid(), player.getUsername(), 0);
+            playerConnection.sendPacket(loginSuccessPacket);
+            playerConnection.setConnectionState(ConnectionState.PLAY);
+            if (register) registerPlayer(player);
+            this.waitingPlayers.relaxedOffer(player);
         });
-  }
+    }
 
-  /**
-   * Binds a GS4 listener to the specified {@code hostname} and {@code port}.
-   *
-   * @param hostname the hostname to bind to
-   * @param port     the port to bind to
-   */
-  public void queryBind(final String hostname, final int port) {
-    InetSocketAddress address = new InetSocketAddress(hostname, port);
-    final Bootstrap bootstrap = new Bootstrap()
-        .channelFactory(this.transportType.datagramChannelFactory)
-        .group(this.workerGroup)
-        .handler(new GameSpyQueryHandler(this.server))
-        .localAddress(address);
-    bootstrap.bind()
-        .addListener((ChannelFutureListener) future -> {
-          final Channel channel = future.channel();
-          if (future.isSuccess()) {
-            this.endpoints.put(address, new Endpoint(channel, ListenerType.QUERY));
-            LOGGER.info("Listening for GS4 query on {}", channel.localAddress());
+    /**
+     * Creates a {@link Player} using the defined {@link PlayerProvider}
+     * and execute {@link #startPlayState(Player, boolean)}.
+     *
+     * @return the newly created player object
+     * @see #startPlayState(Player, boolean)
+     */
+    public @NotNull Player startPlayState(@NotNull PlayerConnection connection,
+                                          @NotNull UUID uuid, @NotNull String username,
+                                          boolean register) {
+        final Player player = playerProvider.createPlayer(uuid, username, connection);
+        startPlayState(player, register);
+        return player;
+    }
 
-            // Fire the proxy bound event after the socket is bound
-            server.getEventManager().fireAndForget(
-                new ListenerBoundEvent(address, ListenerType.QUERY));
-          } else {
-            LOGGER.error("Can't bind to {}", bootstrap.config().localAddress(), future.cause());
-          }
+    /**
+     * Shutdowns the connection manager by kicking all the currently connected players.
+     */
+    public synchronized void shutdown() {
+        this.players.clear();
+        this.connectionPlayerMap.clear();
+    }
+
+    /**
+     * Connects waiting players.
+     */
+    public void updateWaitingPlayers() {
+        this.waitingPlayers.drain(waitingPlayer -> {
+            PlayerLoginEvent loginEvent = new PlayerLoginEvent(waitingPlayer);
+            EventDispatcher.call(loginEvent);
+            final Instance spawningInstance = loginEvent.getSpawningInstance();
+            Check.notNull(spawningInstance, "You need to specify a spawning instance in the PlayerLoginEvent");
+            // Spawn the player at Player#getRespawnPoint
+            if (DebugUtils.INSIDE_TEST) {
+                // Required to get the exact moment the player spawns
+                waitingPlayer.UNSAFE_init(spawningInstance).join();
+            } else {
+                waitingPlayer.UNSAFE_init(spawningInstance);
+            }
         });
-  }
-
-  /**
-   * Creates a TCP {@link Bootstrap} using Velocity's event loops.
-   *
-   * @param group the event loop group to use. Use {@code null} for the default worker group.
-   * @return a new {@link Bootstrap}
-   */
-  public Bootstrap createWorker(@Nullable EventLoopGroup group) {
-    Bootstrap bootstrap = new Bootstrap()
-        .channelFactory(this.transportType.socketChannelFactory)
-        .option(ChannelOption.TCP_NODELAY, true)
-        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
-            this.server.getConfiguration().getConnectTimeout())
-        .group(group == null ? this.workerGroup : group)
-        .resolver(this.resolver.asGroup());
-    if (transportType == TransportType.EPOLL && server.getConfiguration().useTcpFastOpen()) {
-      bootstrap.option(EpollChannelOption.TCP_FASTOPEN_CONNECT, true);
-    }
-    return bootstrap;
-  }
-
-  /**
-   * Closes the specified {@code oldBind} endpoint.
-   *
-   * @param oldBind the endpoint to close
-   */
-  public void close(InetSocketAddress oldBind) {
-    Endpoint endpoint = endpoints.remove(oldBind);
-
-    // Fire proxy close event to notify plugins of socket close. We block since plugins
-    // should have a chance to be notified before the server stops accepting connections.
-    server.getEventManager().fire(new ListenerCloseEvent(oldBind, endpoint.getType())).join();
-
-    Channel serverChannel = endpoint.getChannel();
-
-    Preconditions.checkState(serverChannel != null, "Endpoint %s not registered", oldBind);
-    LOGGER.info("Closing endpoint {}", serverChannel.localAddress());
-    serverChannel.close().syncUninterruptibly();
-  }
-
-  /**
-   * Closes all endpoints.
-   */
-  public void shutdown() {
-    for (final Map.Entry<InetSocketAddress, Endpoint> entry : this.endpoints.entrySet()) {
-      final InetSocketAddress address = entry.getKey();
-      final Endpoint endpoint = entry.getValue();
-
-      // Fire proxy close event to notify plugins of socket close. We block since plugins
-      // should have a chance to be notified before the server stops accepting connections.
-      server.getEventManager().fire(new ListenerCloseEvent(address, endpoint.getType())).join();
-
-      try {
-        LOGGER.info("Closing endpoint {}", address);
-        endpoint.getChannel().close().sync();
-      } catch (final InterruptedException e) {
-        LOGGER.info("Interrupted whilst closing endpoint", e);
-        Thread.currentThread().interrupt();
-      }
     }
 
-    this.resolver.shutdown();
-  }
-
-  public EventLoopGroup getBossGroup() {
-    return bossGroup;
-  }
-
-  public ServerChannelInitializerHolder getServerChannelInitializer() {
-    return this.serverChannelInitializer;
-  }
-
-  public AsyncHttpClient getHttpClient() {
-    return httpClient;
-  }
-
-  public BackendChannelInitializerHolder getBackendChannelInitializer() {
-    return this.backendChannelInitializer;
-  }
+    /**
+     * Updates keep alive by checking the last keep alive packet and send a new one if needed.
+     *
+     * @param tickStart the time of the update in milliseconds, forwarded to the packet
+     */
+    public void handleKeepAlive(long tickStart) {
+        final KeepAlivePacket keepAlivePacket = new KeepAlivePacket(tickStart);
+        for (Player player : getOnlinePlayers()) {
+            final long lastKeepAlive = tickStart - player.getLastKeepAlive();
+            if (lastKeepAlive > KEEP_ALIVE_DELAY && player.didAnswerKeepAlive()) {
+                player.refreshKeepAlive(tickStart);
+                player.sendPacket(keepAlivePacket);
+            } else if (lastKeepAlive >= KEEP_ALIVE_KICK) {
+                player.kick(TIMEOUT_TEXT);
+            }
+        }
+    }
 }

@@ -1,15 +1,38 @@
 package com.velocitypowered.proxy.network.packet.client.login;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.velocitypowered.proxy.MinecraftProxy;
+import com.velocitypowered.proxy.crypto.SaltSignaturePair;
+import com.velocitypowered.proxy.crypto.SignatureValidator;
 import com.velocitypowered.proxy.network.NetworkBuffer;
 import com.velocitypowered.proxy.network.packet.client.ClientPreplayPacket;
+import com.velocitypowered.proxy.network.player.ClientConnection;
+import com.velocitypowered.proxy.util.Either;
+import com.velocitypowered.proxy.util.InterfaceUtils;
+import com.velocitypowered.proxy.util.crypto.KeyUtils;
+import com.velocitypowered.proxy.util.mojang.MojangAuth;
+import com.velocitypowered.proxy.util.mojang.MojangCrypt;
 import org.jetbrains.annotations.NotNull;
 
-import static com.velocitypowered.proxy.network.NetworkBuffer.BYTE_ARRAY;
+import javax.crypto.SecretKey;
+
+import java.math.BigInteger;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.UUID;
+
+import static com.velocitypowered.proxy.network.NetworkBuffer.*;
 
 public record EncryptionResponsePacket(
         byte[] sharedSecret,
         Either<byte[], SaltSignaturePair> nonceOrSignature
+
 ) implements ClientPreplayPacket {
 
     private static final Gson GSON = new Gson();
@@ -22,7 +45,7 @@ public record EncryptionResponsePacket(
     }
 
     @Override
-    public void process(@NotNull PlayerConnection connection) {
+    public void process(@NotNull ClientConnection connection) {
         // Encryption is only support for socket connection
         if (!(connection instanceof PlayerSocketConnection socketConnection)) return;
         AsyncUtils.runAsync(() -> {
@@ -44,14 +67,14 @@ public record EncryptionResponsePacket(
                             }, signature.signature()));
 
             if (verificationFailed) {
-                MinecraftServer.LOGGER.error("Encryption failed for {}", loginUsername);
+                MinecraftProxy.LOGGER.error("Encryption failed for {}", loginUsername);
                 return;
             }
 
             final byte[] digestedData = MojangCrypt.digestData("", MojangAuth.getKeyPair().getPublic(), getSecretKey());
             if (digestedData == null) {
                 // Incorrect key, probably because of the client
-                MinecraftServer.LOGGER.error("Connection {} failed initializing encryption.", socketConnection.getRemoteAddress());
+                MinecraftProxy.LOGGER.error("Connection {} failed initializing encryption.", socketConnection.getRemoteAddress());
                 connection.disconnect();
                 return;
             }
@@ -66,7 +89,7 @@ public record EncryptionResponsePacket(
             final HttpRequest request = HttpRequest.newBuilder(URI.create(url)).GET().build();
             client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).whenComplete((response, throwable) -> {
                 if (throwable != null) {
-                    MinecraftServer.getExceptionManager().handleException(throwable);
+                    MinecraftProxy.getExceptionManager().handleException(throwable);
                     //todo disconnect with reason
                     return;
                 }
@@ -82,10 +105,10 @@ public record EncryptionResponsePacket(
                             .replaceFirst("(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})", "$1-$2-$3-$4-$5"));
                     final String profileName = gameProfile.get("name").getAsString();
 
-                    MinecraftServer.LOGGER.info("UUID of player {} is {}", loginUsername, profileUUID);
+                    MinecraftProxy.LOGGER.info("UUID of player {} is {}", loginUsername, profileUUID);
                     CONNECTION_MANAGER.startPlayState(connection, profileUUID, profileName, true);
                 } catch (Exception e) {
-                    MinecraftServer.getExceptionManager().handleException(e);
+                    MinecraftProxy.getExceptionManager().handleException(e);
                 }
             });
         });
@@ -94,8 +117,11 @@ public record EncryptionResponsePacket(
     @Override
     public void write(@NotNull NetworkBuffer writer) {
         writer.write(BYTE_ARRAY, sharedSecret);
-        writer.writeEither(nonceOrSignature, (networkBuffer, bytes) -> networkBuffer.write(BYTE_ARRAY, bytes),
-                InterfaceUtils.flipBiConsumer(SaltSignaturePair::write));
+        writer.writeEither(
+                nonceOrSignature,
+                (networkBuffer, bytes) -> networkBuffer.write(BYTE_ARRAY, bytes),
+                InterfaceUtils.flipBiConsumer(SaltSignaturePair::write)
+        );
     }
 
     private SecretKey getSecretKey() {

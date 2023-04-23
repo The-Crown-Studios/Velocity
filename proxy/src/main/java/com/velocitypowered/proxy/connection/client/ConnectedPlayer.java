@@ -120,8 +120,7 @@ import org.jetbrains.annotations.NotNull;
 /**
  * Represents a player that is connected to the proxy.
  */
-public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, KeyIdentifiable,
-    VelocityInboundConnection {
+public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, KeyIdentifiable, VelocityInboundConnection {
 
   private static final int MAX_PLUGIN_CHANNELS = 1024;
   private static final PlainTextComponentSerializer PASS_THRU_TRANSLATE =
@@ -349,12 +348,13 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
     Component translated = translateMessage(message);
 
     connection.write(getChatBuilderFactory().builder()
-        .component(translated).forIdentity(identity).toClient());
+            .component(translated)
+            .forIdentity(identity)
+            .toClient());
   }
 
   @Override
-  public void sendMessage(@NonNull Identity identity, @NonNull Component message,
-      @NonNull MessageType type) {
+  public void sendMessage(@NonNull Identity identity, @NonNull Component message, @NonNull MessageType type) {
     Preconditions.checkNotNull(message, "message");
     Preconditions.checkNotNull(type, "type");
 

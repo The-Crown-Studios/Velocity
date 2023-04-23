@@ -108,6 +108,7 @@ dependencies {
     implementation(libs.fastutil)
     implementation(platform(libs.adventure.bom))
     implementation("net.kyori:adventure-nbt")
+    implementation("net.kyori:adventure-text-logger-slf4j:adventure")
     implementation(libs.adventure.facet)
     implementation(libs.hephaistos)
     implementation(libs.asynchttpclient)
